@@ -35,6 +35,9 @@
 #include "KeyFrameDatabase.h"
 #include "ORBVocabulary.h"
 #include "Viewer.h"
+#include "pointcloudmapping.h"//PCL
+
+class PointCloudMapping;//PCL
 
 namespace ORB_SLAM2
 {
@@ -46,6 +49,7 @@ class Tracking;
 class LocalMapping;
 class LoopClosing;
 
+
 class System
 {
 public:
@@ -55,6 +59,7 @@ public:
         STEREO=1,
         RGBD=2
     };
+
 
 public:
 
@@ -156,6 +161,10 @@ private:
     std::mutex mMutexMode;
     bool mbActivateLocalizationMode;
     bool mbDeactivateLocalizationMode;
+    // point cloud mapping
+    shared_ptr<PointCloudMapping>  mpPointCloudMapping;//PCL
+    float OctoMaporNot = 0;
+
 };
 
 }// namespace ORB_SLAM

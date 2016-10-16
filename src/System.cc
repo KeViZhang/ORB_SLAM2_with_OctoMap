@@ -57,9 +57,15 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
        exit(-1);
     }
 
+    float resolution = fsSettings["PointCloudMapping.Resolution"];//PCL,OctoMap  OctoMap: True
+    OctoMaporNot = fsSettings["PointCloudMapping.YesorNo"];//PCL,OctoMap  OctoMap: True
+    if(OctoMaporNot)
+        cout << endl << "PointCloudMapping True: " << endl << OctoMaporNot << endl;
+    else
+        cout << endl << "PointCloudMapping False: " << endl << OctoMaporNot << endl;
 
     //Load ORB Vocabulary
-    cout << endl << "Loading ORB Vocabulary. This could take a while..." << endl;
+    cout << endl <<"Loading ORB Vocabulary. This could take a while..." << endl;
 
     mpVocabulary = new ORBVocabulary();
     bool bVocLoad = mpVocabulary->loadFromTextFile(strVocFile);
@@ -83,9 +89,20 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
 
     //Initialize the Tracking thread
     //(it will live in the main thread of execution, the one that called this constructor)
-    mpTracker = new Tracking(this, mpVocabulary, mpFrameDrawer, mpMapDrawer,
-                             mpMap, mpKeyFrameDatabase, strSettingsFile, mSensor);
 
+    if(OctoMaporNot)
+    {
+        cout << endl << "OctoMap Enabled" << endl;
+        mpPointCloudMapping = make_shared<PointCloudMapping>( resolution );//PCL,OctoMap
+        mpTracker = new Tracking(this, mpVocabulary, mpFrameDrawer, mpMapDrawer,
+                                 mpMap, mpKeyFrameDatabase, strSettingsFile, mSensor, mpPointCloudMapping);//PCL,OctoMap
+    }
+    else
+    {
+        cout << endl << "OctoMap Disabled" << endl;
+        mpTracker = new Tracking(this, mpVocabulary, mpFrameDrawer, mpMapDrawer,
+                                mpMap, mpKeyFrameDatabase, strSettingsFile, mSensor);
+    }
     //Initialize the Local Mapping thread and launch
     mpLocalMapper = new LocalMapping(mpMap, mSensor==MONOCULAR);
     mptLocalMapping = new thread(&ORB_SLAM2::LocalMapping::Run,mpLocalMapper);
@@ -101,7 +118,7 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
 
     mpTracker->SetViewer(mpViewer);
 
-    //Set pointers between threads
+    //Set pointers between threads        这是干吗的？
     mpTracker->SetLocalMapper(mpLocalMapper);
     mpTracker->SetLoopClosing(mpLoopCloser);
 
@@ -270,6 +287,12 @@ void System::Shutdown()
     mpLocalMapper->RequestFinish();
     mpLoopCloser->RequestFinish();
     mpViewer->RequestFinish();
+    //cout<<"LHC test PCL"<<endl;
+    //cout<<endl<<mSensor<<endl;
+    if(mSensor==RGBD && OctoMaporNot == 1)
+    {
+        mpPointCloudMapping->shutdown();//PCL
+    }
 
     // Wait until all thread have effectively stopped
     while(!mpLocalMapper->isFinished() || !mpLoopCloser->isFinished()  ||

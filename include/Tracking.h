@@ -17,7 +17,7 @@
 * You should have received a copy of the GNU General Public License
 * along with ORB-SLAM2. If not, see <http://www.gnu.org/licenses/>.
 */
-
+//lhc
 
 #ifndef TRACKING_H
 #define TRACKING_H
@@ -39,6 +39,7 @@
 #include "System.h"
 
 #include <mutex>
+class PointCloudMapping;
 
 namespace ORB_SLAM2
 {
@@ -55,8 +56,9 @@ class Tracking
 
 public:
     Tracking(System* pSys, ORBVocabulary* pVoc, FrameDrawer* pFrameDrawer, MapDrawer* pMapDrawer, Map* pMap,
-             KeyFrameDatabase* pKFDB, const string &strSettingPath, const int sensor);
-
+             KeyFrameDatabase* pKFDB, const string &strSettingPath, const int sensor);//original
+    Tracking(System* pSys, ORBVocabulary* pVoc, FrameDrawer* pFrameDrawer, MapDrawer* pMapDrawer, Map* pMap,
+             KeyFrameDatabase* pKFDB, const string &strSettingPath, const int sensor, shared_ptr<PointCloudMapping> pPointCloud);
     // Preprocess the input and call Track(). Extract features and performs stereo matching.
     cv::Mat GrabImageStereo(const cv::Mat &imRectLeft,const cv::Mat &imRectRight, const double &timestamp);
     cv::Mat GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const double &timestamp);
@@ -91,10 +93,12 @@ public:
 
     // Input sensor
     int mSensor;
-
+    float mOctoMaping = 0;
     // Current Frame
     Frame mCurrentFrame;
+    cv::Mat mImRGB;
     cv::Mat mImGray;
+    cv::Mat mImDepth;
 
     // Initialization Variables (Monocular)
     std::vector<int> mvIniLastMatches;
@@ -114,6 +118,7 @@ public:
     bool mbOnlyTracking;
 
     void Reset();
+
 
 protected:
 
@@ -214,6 +219,7 @@ protected:
     bool mbRGB;
 
     list<MapPoint*> mlpTemporalPoints;
+    shared_ptr<PointCloudMapping>  mpPointCloudMapping;//PCL
 };
 
 } //namespace ORB_SLAM
