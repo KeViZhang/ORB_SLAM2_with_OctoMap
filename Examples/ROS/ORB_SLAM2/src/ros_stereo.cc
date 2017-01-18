@@ -33,6 +33,10 @@
 #include<opencv2/core/core.hpp>
 
 #include"../../../include/System.h"
+#include<geometry_msgs/PoseStamped.h>
+#include <tf/transform_datatypes.h>
+
+#include <Converter.h>
 
 using namespace std;
 
@@ -46,23 +50,25 @@ public:
     ORB_SLAM2::System* mpSLAM;
     bool do_rectify;
     cv::Mat M1l,M2l,M1r,M2r;
+    size_t trace_id_ = 0;//lhc
+    ros::NodeHandle lhc_node;//lhc
+    ros::Publisher cam_pose_pub;//lhc
+
+    cv::Mat cam_pose;
 };
 
 int main(int argc, char **argv)
 {
-    ros::init(argc, argv, "RGBD");
+    ros::init(argc, argv, "STEREO");
     ros::start();
-
     if(argc != 4)
     {
         cerr << endl << "Usage: rosrun ORB_SLAM2 Stereo path_to_vocabulary path_to_settings do_rectify" << endl;
         ros::shutdown();
         return 1;
     }    
-
     // Create SLAM system. It initializes all system threads and gets ready to process frames.
     ORB_SLAM2::System SLAM(argv[1],argv[2],ORB_SLAM2::System::STEREO,true);
-
     ImageGrabber igb(&SLAM);
 
     stringstream ss(argv[3]);
@@ -108,16 +114,17 @@ int main(int argc, char **argv)
     }
 
     ros::NodeHandle nh;
-
-    message_filters::Subscriber<sensor_msgs::Image> left_sub(nh, "/camera/left/image_raw", 1);
-    message_filters::Subscriber<sensor_msgs::Image> right_sub(nh, "camera/right/image_raw", 1);
+    message_filters::Subscriber<sensor_msgs::Image> left_sub(nh, "/stereo/left/image_raw", 1);
+    message_filters::Subscriber<sensor_msgs::Image> right_sub(nh, "/stereo/right/image_raw", 1);
     typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image> sync_pol;
     message_filters::Synchronizer<sync_pol> sync(sync_pol(10), left_sub,right_sub);
     sync.registerCallback(boost::bind(&ImageGrabber::GrabStereo,&igb,_1,_2));
 
     ros::spin();
+    //ros::spinOnce();//lhc test
 
     // Stop all threads
+    //cerr << "Stop all threads" << endl;//lhc,ctrl+C,执行一次
     SLAM.Shutdown();
 
     // Save camera trajectory
@@ -132,6 +139,11 @@ int main(int argc, char **argv)
 
 void ImageGrabber::GrabStereo(const sensor_msgs::ImageConstPtr& msgLeft,const sensor_msgs::ImageConstPtr& msgRight)
 {
+
+    cam_pose_pub = lhc_node.advertise<geometry_msgs::PoseStamped>("pose",10);//mavros/vision_pose/pose
+    std_msgs::Header header_msg;
+    ros::Time time;
+    geometry_msgs::PoseStamped msg_pose;
     // Copy the ros image message to cv::Mat.
     cv_bridge::CvImageConstPtr cv_ptrLeft;
     try
@@ -160,12 +172,41 @@ void ImageGrabber::GrabStereo(const sensor_msgs::ImageConstPtr& msgLeft,const se
         cv::Mat imLeft, imRight;
         cv::remap(cv_ptrLeft->image,imLeft,M1l,M2l,cv::INTER_LINEAR);
         cv::remap(cv_ptrRight->image,imRight,M1r,M2r,cv::INTER_LINEAR);
-        mpSLAM->TrackStereo(imLeft,imRight,cv_ptrLeft->header.stamp.toSec());
+        cam_pose = mpSLAM->TrackStereo(imLeft,imRight,cv_ptrLeft->header.stamp.toSec());
     }
     else
     {
-        mpSLAM->TrackStereo(cv_ptrLeft->image,cv_ptrRight->image,cv_ptrLeft->header.stamp.toSec());
+        cam_pose = mpSLAM->TrackStereo(cv_ptrLeft->image,cv_ptrRight->image,cv_ptrLeft->header.stamp.toSec());
     }
+    if (cam_pose.empty())
+    {
+        return;
+    }
+
+    ++trace_id_;
+    header_msg.frame_id = "/cam";//local_origin
+    header_msg.seq = trace_id_;
+    header_msg.stamp = time.now();
+    msg_pose.header = header_msg;
+
+    static const cv::Mat rotation = (cv::Mat_<float>(4,4) <<
+                                     -1, 0, 0, 0,
+                                     0, 0, -1, 0,
+                                     0, 1, 0, 0,
+                                     0, 0, 0, 1);
+
+    cam_pose = rotation * cam_pose;
+
+    msg_pose.pose.position.x = cam_pose.at<float>(0,3);//
+    msg_pose.pose.position.y = cam_pose.at<float>(1,3);//
+    msg_pose.pose.position.z = cam_pose.at<float>(2,3);//
+
+    //msg_pose.pose.orientation.x = Converter::toSE3Quat(cam_pose).rotation().x();
+    //msg_pose.pose.orientation.y = Converter::toSE3Quat(cam_pose).rotation().y();
+    //msg_pose.pose.orientation.z = Converter::toSE3Quat(cam_pose).rotation().z();
+    //msg_pose.pose.orientation.w = Converter::toSE3Quat(cam_pose).rotation().w();
+
+    cam_pose_pub.publish(msg_pose);
 
 }
 
