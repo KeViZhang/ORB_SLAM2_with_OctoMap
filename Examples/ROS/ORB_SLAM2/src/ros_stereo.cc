@@ -178,6 +178,7 @@ void ImageGrabber::GrabStereo(const sensor_msgs::ImageConstPtr& msgLeft,const se
     {
         cam_pose = mpSLAM->TrackStereo(cv_ptrLeft->image,cv_ptrRight->image,cv_ptrLeft->header.stamp.toSec());
     }
+    //cout << endl << "cv_ptrLeft->header.stamp: " << cv_ptrLeft->header.stamp << endl;
     if (cam_pose.empty())
     {
         return;
@@ -186,7 +187,8 @@ void ImageGrabber::GrabStereo(const sensor_msgs::ImageConstPtr& msgLeft,const se
     ++trace_id_;
     header_msg.frame_id = "/cam";//local_origin
     header_msg.seq = trace_id_;
-    header_msg.stamp = time.now();
+    header_msg.stamp = cv_ptrLeft->header.stamp;//Correct the time of the current camera pose.
+    //cout << endl << "cv_ptrLeft->header.stamp - header_msg.stamp = " << cv_ptrLeft->header.stamp - header_msg.stamp << endl;
     msg_pose.header = header_msg;
 
     static const cv::Mat rotation = (cv::Mat_<float>(4,4) <<
