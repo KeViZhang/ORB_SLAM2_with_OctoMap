@@ -36,21 +36,21 @@
 #include<iostream>
 
 #include<mutex>
-
 #include "pointcloudmapping.h"
 
+using namespace cv;
 using namespace std;
 
 namespace ORB_SLAM2
 {
 
-Tracking::Tracking(System* pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer, MapDrawer *pMapDrawer, Map *pMap, KeyFrameDatabase* pKFDB, const string &strSettingPath, const int sensor):
+Tracking::Tracking(System *pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer, MapDrawer *pMapDrawer, Map *pMap, KeyFrameDatabase* pKFDB, const string &strSettingPath, const int sensor):
     mState(NO_IMAGES_YET), mSensor(sensor), mbOnlyTracking(false), mbVO(false), mpORBVocabulary(pVoc),
     mpKeyFrameDB(pKFDB), mpInitializer(static_cast<Initializer*>(NULL)), mpSystem(pSys),
     mpFrameDrawer(pFrameDrawer), mpMapDrawer(pMapDrawer), mpMap(pMap), mnLastRelocFrameId(0)
 {
     // Load camera parameters from settings file
-//    pub = node.advertise<geometry_msgs::PoseStamped>("pose",10);//lhc
+
     cv::FileStorage fSettings(strSettingPath, cv::FileStorage::READ);
     float fx = fSettings["Camera.fx"];
     float fy = fSettings["Camera.fy"];
@@ -141,14 +141,14 @@ Tracking::Tracking(System* pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer,
     if(sensor==System::RGBD)
     {
         mDepthMapFactor = fSettings["DepthMapFactor"];
-        if(mDepthMapFactor==0)
+        if(fabs(mDepthMapFactor)<1e-5)//different,if(mDepthMapFactor==0)
             mDepthMapFactor=1;
         else
             mDepthMapFactor = 1.0f/mDepthMapFactor;
     }
-
+    //
+    kalman_xyz_init();
 }//END original
-
 
 Tracking::Tracking(System* pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer, MapDrawer *pMapDrawer, Map *pMap, KeyFrameDatabase* pKFDB, const string &strSettingPath, const int sensor, shared_ptr<PointCloudMapping> pPointCloud):
     mState(NO_IMAGES_YET), mSensor(sensor), mbOnlyTracking(false), mbVO(false), mpORBVocabulary(pVoc),
@@ -306,18 +306,16 @@ cv::Mat Tracking::GrabImageStereo(const cv::Mat &imRectLeft, const cv::Mat &imRe
     mCurrentFrame = Frame(mImGray,imGrayRight,timestamp,mpORBextractorLeft,mpORBextractorRight,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth);
 
     Track();
-    //cout << endl  << "Track();  return mCurrentFrame.mTcw.clone();" << endl;//lhc 测试
-    //pSys->lhc_camera_pose = mCurrentFrame.mTcw.clone();
+
     return mCurrentFrame.mTcw.clone();
 }
-
 
 cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const double &timestamp)
 {
     mImRGB = imRGB;
     mImGray = imRGB;
     mImDepth = imD;
-    //cv::Mat imDepth = imD;
+    //cv::Mat imDepth = imD;//
 
     if(mImGray.channels()==3)
     {
@@ -334,8 +332,8 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
             cvtColor(mImGray,mImGray,CV_BGRA2GRAY);
     }
 
-    if(mDepthMapFactor!=1 || mImDepth.type()!=CV_32F);
-    mImDepth.convertTo(mImDepth,CV_32F,mDepthMapFactor);
+    if((fabs(mDepthMapFactor-1.0f)>1e-5) || mImDepth.type()!=CV_32F)
+        mImDepth.convertTo(mImDepth,CV_32F,mDepthMapFactor);
 
     mCurrentFrame = Frame(mImGray,mImDepth,timestamp,mpORBextractorLeft,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth);
 
@@ -504,6 +502,8 @@ void Tracking::Track()
 
         mCurrentFrame.mpReferenceKF = mpReferenceKF;
 
+
+
         // If we have an initial estimation of the camera pose and matching. Track the local map.
         if(!mbOnlyTracking)
         {
@@ -537,13 +537,15 @@ void Tracking::Track()
                 mLastFrame.GetRotationInverse().copyTo(LastTwc.rowRange(0,3).colRange(0,3));
                 mLastFrame.GetCameraCenter().copyTo(LastTwc.rowRange(0,3).col(3));
                 mVelocity = mCurrentFrame.mTcw*LastTwc;
+                //Automatic parameters tuning
+                AutoParamTuning();
             }
             else
                 mVelocity = cv::Mat();
 
             mpMapDrawer->SetCurrentCameraPose(mCurrentFrame.mTcw);
 
-            // Clean temporal point matches
+            // Clean VO matches
             for(int i=0; i<mCurrentFrame.N; i++)
             {
                 MapPoint* pMP = mCurrentFrame.mvpMapPoints[i];
@@ -916,7 +918,7 @@ void Tracking::UpdateLastFrame()
 
     mLastFrame.SetPose(Tlr*pRef->GetPose());
 
-    if(mnLastKeyFrameId==mLastFrame.mnId || mSensor==System::MONOCULAR)
+    if(mnLastKeyFrameId==mLastFrame.mnId || mSensor==System::MONOCULAR || !mbOnlyTracking)//Changed
         return;
 
     // Create "visual odometry" MapPoints
@@ -979,7 +981,7 @@ bool Tracking::TrackWithMotionModel()
     ORBmatcher matcher(0.9,true);
 
     // Update last frame pose according to its reference keyframe
-    // Create "visual odometry" points
+    // Create "visual odometry" points if in Localization Mode
     UpdateLastFrame();
 
     mCurrentFrame.SetPose(mVelocity*mLastFrame.mTcw);
@@ -1006,9 +1008,6 @@ bool Tracking::TrackWithMotionModel()
 
     // Optimize frame pose with all matches
     Optimizer::PoseOptimization(&mCurrentFrame);
-
-    
-
 
     // Discard outliers
     int nmatchesMap = 0;
@@ -1111,33 +1110,24 @@ bool Tracking::NeedNewKeyFrame()
     // Local Mapping accept keyframes?
     bool bLocalMappingIdle = mpLocalMapper->AcceptKeyFrames();
 
-    // Stereo & RGB-D: Ratio of close "matches to map"/"total matches"
-    // "total matches = matches to map + visual odometry matches"
-    // Visual odometry matches will become MapPoints if we insert a keyframe.
-    // This ratio measures how many MapPoints we could create if we insert a keyframe.
-    int nMap = 0;
-    int nTotal= 0;
+    // Check how many "close" points are being tracked and how many could be potentially created.
+    int nNonTrackedClose = 0;
+    int nTrackedClose= 0;
     if(mSensor!=System::MONOCULAR)
     {
         for(int i =0; i<mCurrentFrame.N; i++)
         {
             if(mCurrentFrame.mvDepth[i]>0 && mCurrentFrame.mvDepth[i]<mThDepth)
             {
-                nTotal++;
-                if(mCurrentFrame.mvpMapPoints[i])
-                    if(mCurrentFrame.mvpMapPoints[i]->Observations()>0)
-                        nMap++;
+                if(mCurrentFrame.mvpMapPoints[i] && !mCurrentFrame.mvbOutlier[i])
+                    nTrackedClose++;
+                else
+                    nNonTrackedClose++;
             }
         }
     }
-    else
-    {
-        // There are no visual odometry matches in the monocular case
-        nMap=1;
-        nTotal=1;
-    }
 
-    const float ratioMap = (float)nMap/fmax(1.0f,nTotal);
+    bool bNeedToInsertClose = (nTrackedClose<100) && (nNonTrackedClose>70);
 
     // Thresholds
     float thRefRatio = 0.75f;
@@ -1147,18 +1137,14 @@ bool Tracking::NeedNewKeyFrame()
     if(mSensor==System::MONOCULAR)
         thRefRatio = 0.9f;
 
-    float thMapRatio = 0.35f;
-    if(mnMatchesInliers>300)
-        thMapRatio = 0.20f;
-
     // Condition 1a: More than "MaxFrames" have passed from last keyframe insertion
     const bool c1a = mCurrentFrame.mnId>=mnLastKeyFrameId+mMaxFrames;
     // Condition 1b: More than "MinFrames" have passed and Local Mapping is idle
     const bool c1b = (mCurrentFrame.mnId>=mnLastKeyFrameId+mMinFrames && bLocalMappingIdle);
     //Condition 1c: tracking is weak
-    const bool c1c =  mSensor!=System::MONOCULAR && (mnMatchesInliers<nRefMatches*0.25 || ratioMap<0.3f) ;
+    const bool c1c =  mSensor!=System::MONOCULAR && (mnMatchesInliers<nRefMatches*0.25 || bNeedToInsertClose) ;
     // Condition 2: Few tracked points compared to reference keyframe. Lots of visual odometry compared to map matches.
-    const bool c2 = ((mnMatchesInliers<nRefMatches*thRefRatio|| ratioMap<thMapRatio) && mnMatchesInliers>15);
+    const bool c2 = ((mnMatchesInliers<nRefMatches*thRefRatio|| bNeedToInsertClose) && mnMatchesInliers>15);
 
     if((c1a||c1b||c1c)&&c2)
     {
@@ -1259,6 +1245,7 @@ void Tracking::CreateNewKeyFrame()
     }
 
     mpLocalMapper->InsertKeyFrame(pKF);
+
     mpLocalMapper->SetNotStop(false);
     if(mSensor == 2 && mOctoMaping == 1)//RGBD==2
     {
@@ -1716,6 +1703,104 @@ void Tracking::InformOnlyTracking(const bool &flag)
     mbOnlyTracking = flag;
 }
 
+void Tracking::AutoParamTuning()
+{
+    double L2_norm = cv::norm(mCurrentFrame.mTcw, mLastFrame.mTcw, CV_L2);
+    //mCurrentFrame;// Current Frame
+    //mLastFrame;//Last Frame
+    //mVelocity;//Motion Model
 
+    //if(last_mVelocity.empty())
+        //return;
 
+    //cout << endl << mCurrentFrame.mTcw - mLastFrame.mTcw << endl;
+    //cv::determinant(mVelocity);
+    //last_mVelocity = mVelocity.clone();
+
+    if (L2_norm < 0.02)
+    {
+        mMaxFrames = 60;
+        //mpORBextractorLeft = new ORBextractor(1000,1.2,8,20,7);
+    }
+
+    else if ((L2_norm >= 0.02) && (L2_norm <= 0.07))
+    {
+       mMaxFrames = 30;
+       //mpORBextractorLeft = new ORBextractor(1000,1.2,8,20,7);
+    }
+    else if ((L2_norm > 0.07) && (L2_norm <= 0.1))
+    {
+        mMaxFrames = 10;
+        //mpORBextractorLeft = new ORBextractor(1000,1.2,8,20,7);
+    }
+    else if (L2_norm > 0.1)
+    {
+        mMaxFrames = 5;
+        //mpORBextractorLeft = new ORBextractor(1000,1.2,8,20,7);
+    }
+    //cout << endl << L2_norm << endl << mMaxFrames << endl;
+    kalman_xyz();
+}
+void Tracking::kalman_xyz_init()
+{
+    //1.kalman filter setup
+    const int stateNum = 6;
+    const int measureNum = 3;
+    KF = KalmanFilter(stateNum, measureNum, 0);
+    state = cv::Mat(stateNum, 1, CV_32FC1); //state(x,y,z, detaX,detaY,detaZ)
+    //Mat processNoise(stateNum, 1, CV_32F);
+    measurement = Mat::zeros(measureNum, 1, CV_32F);    //measurement(x,y)
+    prediction = Mat::zeros(measureNum, 1, CV_32F);
+    randn( state, Scalar::all(0), Scalar::all(0.1) ); //随机生成一个矩阵，期望是0，标准差为0.1;
+    KF.transitionMatrix = *(Mat_<float>(6, 6) <<
+                            1,0,0,1,0,0,
+                            0,1,0,0,1,0,
+                            0,0,1,0,0,1,
+                            0,0,0,1,0,0,
+                            0,0,0,0,1,0,
+                            0,0,0,0,0,1  );//元素导入矩阵，按行;
+
+    //setIdentity: 缩放的单位对角矩阵;
+    //!< measurement matrix (H) 观测模型
+    setIdentity(KF.measurementMatrix);
+
+    //!< process noise covariance matrix (Q)
+    // wk 是过程噪声，并假定其符合均值为零，协方差矩阵为Qk(Q)的多元正态分布;
+    setIdentity(KF.processNoiseCov, Scalar::all(1e-5));
+
+    //!< measurement noise covariance matrix (R)
+    //vk 是观测噪声，其均值为零，协方差矩阵为Rk,且服从正态分布;
+    setIdentity(KF.measurementNoiseCov, Scalar::all(1e-1));
+
+    //!< corrected state (x(k)): x(k)=x'(k)+K(k)*(z(k)-H*x'(k))
+    //initialize post state of kalman filter at random
+    randn(KF.statePost, Scalar::all(0), Scalar::all(0.1));
+
+    //!< priori error estimate covariance matrix (P'(k)): P'(k)=A*P(k-1)*At + Q)*/  A代表F: transitionMatrix
+    //预测估计协方差矩阵;
+    setIdentity(KF.errorCovPost, Scalar::all(1));
+
+    cout << endl << "kalman filter initialized!" << endl;
+}
+
+void Tracking::kalman_xyz()
+{    
+    //2.kalman prediction
+    prediction = KF.predict();
+    //Point predictPt = Point( (int)prediction.at<float>(0), (int)prediction.at<float>(1));
+
+    //3.update measurement
+    cv::Mat Rwc(3,3,CV_32F);
+    cv::Mat twc(3,1,CV_32F);
+    Rwc = mCurrentFrame.mTcw.rowRange(0,3).colRange(0,3).t();
+    twc = -Rwc * mCurrentFrame.mTcw.rowRange(0,3).col(3);
+    measurement.at<float>(0) = twc.at<float>(0);
+    measurement.at<float>(1) = twc.at<float>(1);
+    measurement.at<float>(2) = twc.at<float>(2);
+
+    //4.update
+    correct = KF.correct(measurement);
+    //cout << endl << correct << endl;
+    cout << endl << abs(prediction.at<float>(0)-measurement.at<float>(0)) + abs(prediction.at<float>(1)-measurement.at<float>(1)) + abs(prediction.at<float>(2)-measurement.at<float>(2)) << endl;
+}
 } //namespace ORB_SLAM
