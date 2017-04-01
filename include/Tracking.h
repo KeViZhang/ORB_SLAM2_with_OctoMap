@@ -39,6 +39,9 @@
 #include "System.h"
 
 #include <mutex>
+
+//using namespace cv;
+
 class PointCloudMapping;
 
 namespace ORB_SLAM2
@@ -149,6 +152,18 @@ protected:
     bool NeedNewKeyFrame();
     void CreateNewKeyFrame();
 
+    //Automatic parameter tuning
+    void AutoParamTuning();
+
+    cv::KalmanFilter KF;
+    cv::Mat state; //state(x,y,z, detaX,detaY,detaZ)
+    cv::Mat measurement;
+    cv::Mat prediction;
+    cv::Mat correct;
+    void kalman_xyz();
+    void kalman_xyz_init();
+
+
     // In case of performing only localization, this flag is true when there are no matches to
     // points in the map. Still tracking will continue if there are enough matches with temporal points.
     // In that case we are doing visual odometry. The system will try to do relocalization to recover
@@ -214,6 +229,7 @@ protected:
 
     //Motion Model
     cv::Mat mVelocity;
+    cv::Mat last_mVelocity;
 
     //Color order (true RGB, false BGR, ignored if grayscale)
     bool mbRGB;
